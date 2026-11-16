@@ -1,17 +1,18 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { ArrowUpRight, Car, Footprints, Heart, MapPin, Sparkles, X } from 'lucide-react';
-import { api, money, roomName } from './api';
+import React, { useEffect, useId, useRef, useState } from 'react';
+import { ArrowUpRight, Car, Footprints, Heart, MapPin, Search, Sparkles, X } from 'lucide-react';
+import { api, mapsRoute, money, roomName } from './api';
 
 export function Modal({ title, onClose, children, className = '' }) {
   const dialog = useRef(null);
+  const titleId = useId();
   useEffect(() => { dialog.current.showModal(); }, []);
   return (
-    <dialog ref={dialog} className={'modal ' + className}
+    <dialog ref={dialog} aria-labelledby={titleId} className={'modal ' + className}
       onCancel={event => { event.preventDefault(); onClose(); }}
       onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
       <div className="modal-inner">
         <div className="modal-heading">
-          <h2>{title}</h2>
+          <h2 id={titleId}>{title}</h2>
           <button className="icon-button" aria-label="Закрыть" onClick={onClose}><X size={22} /></button>
         </div>
         {children}
@@ -22,9 +23,27 @@ export function Modal({ title, onClose, children, className = '' }) {
 
 export function PointEditor({ editor, places, canRemove, onClose, onSave, onRemove, onPick }) {
   const [point, setPoint] = useState(editor.point);
+  const [query, setQuery] = useState('');
+  const [suggestions, setSuggestions] = useState(null);
   const change = (key, value) => setPoint(p => ({ ...p, [key]: value }));
   const isPreset = places.some(p => p.lat === point.lat && p.lon === point.lon);
-  const canSubmit = point.name.trim() && Number.isFinite(point.lat) && point.limit >= 5 && point.limit <= 60;
+  const canSubmit = point.name.trim() && Number.isFinite(point.lat) && Number.isInteger(Number(point.limit)) && point.limit >= 1 && point.limit <= 90;
+
+  useEffect(() => {
+    if (!query.trim()) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      api('/places?q=' + encodeURIComponent(query.trim()), { signal: controller.signal })
+        .then(setSuggestions).catch(error => { if (error.name !== 'AbortError') setSuggestions([]); });
+    }, 180);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [query]);
+
+  const options = query.trim() ? suggestions : [
+    ...['kolts24', 'gallery', 'arena'].map(id => places.find(place => place.id === id)),
+    ...places.filter(place => !['kolts24', 'gallery', 'arena'].includes(place.id)),
+  ].filter(Boolean);
+
   return (
     <Modal title={editor.isNew ? 'Новая точка' : 'Изменить точку'} onClose={onClose}>
       <form className="point-editor" onSubmit={event => {
@@ -33,12 +52,18 @@ export function PointEditor({ editor, places, canRemove, onClose, onSave, onRemo
       }}>
         <fieldset>
           <legend>Куда нужно добираться</legend>
-          <div className="place-list">
-            {places.map(place => <button key={place.id} type="button"
+          <label className="place-search"><Search size={17} />
+            <input type="search" aria-label="Адрес или место" value={query} maxLength={80} placeholder="Улица, номер дома или место"
+              onChange={event => { setSuggestions(null); setQuery(event.target.value); }} />
+          </label>
+          <div className="place-list" aria-label="Подсказки адресов">
+            {options?.map(place => <button key={place.id} type="button"
               className={point.lat === place.lat && point.lon === place.lon ? 'selected' : ''}
               onClick={() => setPoint(p => ({ ...p, name: place.name, lat: place.lat, lon: place.lon }))}>
               <MapPin size={16} /><span>{place.name}<small>{place.hint}</small></span>
             </button>)}
+            {options?.length === 0 && <p>Адрес не найден. Уточните запрос или выберите точку на карте</p>}
+            {!options && <p role="status">Ищем адрес…</p>}
           </div>
           <button className="secondary-button map-pick-button" type="button" onClick={() => onPick(point)}>
             <MapPin size={17} /> {isPreset || !Number.isFinite(point.lat) ? 'Выбрать на карте' : 'Перенести точку на карте'}
@@ -56,7 +81,7 @@ export function PointEditor({ editor, places, canRemove, onClose, onSave, onRemo
             </div>
           </fieldset>
           <label className="field">Макс. минут
-            <input type="number" min="5" max="60" required value={point.limit} onChange={event => change('limit', event.target.value)} />
+            <input type="number" min="1" max="90" required value={point.limit} onChange={event => change('limit', event.target.value)} />
           </label>
         </div>
         <div className="modal-actions">
@@ -68,26 +93,78 @@ export function PointEditor({ editor, places, canRemove, onClose, onSave, onRemo
   );
 }
 
-export function HomeDetails({ home, points, saved, onSave, onClose }) {
-  const [reviews, setReviews] = useState(null);
-  const [summary, setSummary] = useState(null);
-  const [status, setStatus] = useState({ loading: false, error: '' });
+const sections = [['flat', 'Квартира'], ['building', 'Дом'], ['district', 'Район']];
+
+function PropertyNotes({ homeId }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const [scope, setScope] = useState('flat');
+  const [summary, setSummary] = useState({});
+  const [pending, setPending] = useState(null);
+  const [errors, setErrors] = useState({});
+  const summaryRequest = useRef(null);
+
   useEffect(() => {
     const controller = new AbortController();
-    api('/homes/' + home.id, { signal: controller.signal }).then(data => setReviews(data.reviews))
-      .catch(error => { if (error.name !== 'AbortError') setReviews([]); });
-    return () => controller.abort();
-  }, [home.id]);
+    api('/homes/' + homeId, { signal: controller.signal }).then(value => setData(value.sections))
+      .catch(error => { if (error.name !== 'AbortError') setError(error.message); });
+    return () => { controller.abort(); summaryRequest.current?.abort(); };
+  }, [homeId]);
 
   async function summarize() {
-    setStatus({ loading: true, error: '' });
+    setPending(scope);
+    setErrors(previous => ({ ...previous, [scope]: '' }));
+    const controller = new AbortController();
+    summaryRequest.current = controller;
     try {
-      setSummary(await api('/homes/' + home.id + '/summary', { method: 'POST' }));
-      setStatus({ loading: false, error: '' });
+      const value = await api('/homes/' + homeId + '/summary?scope=' + scope, { method: 'POST', signal: controller.signal });
+      setSummary(previous => ({ ...previous, [scope]: value }));
     } catch (error) {
-      setStatus({ loading: false, error: error.message });
+      if (!controller.signal.aborted) setErrors(previous => ({ ...previous, [scope]: error.message }));
+    } finally {
+      if (!controller.signal.aborted) setPending(null);
     }
   }
+
+  const current = data?.[scope];
+  const result = summary[scope];
+  return <section className="property-notes" aria-label="Квартира, дом и район">
+    <div className="section-tabs" role="group" aria-label="Что посмотреть">
+      {sections.map(([key, label]) => <button key={key} type="button" aria-pressed={scope === key} onClick={() => setScope(key)}>{label}</button>)}
+    </div>
+    {error && <p className="form-error" role="alert">{error}</p>}
+    {current && <>
+      <dl className="fact-list">
+        {current.facts.map(fact => <div key={fact.label}>
+          <dt>{fact.label}</dt>
+          <dd>{fact.osm ? <a href={fact.osm} target="_blank" rel="noreferrer" title="Объект на OpenStreetMap">{fact.value} <ArrowUpRight size={13} /></a> : fact.value}</dd>
+        </div>)}
+      </dl>
+      {scope === 'district' && current.facts.some(fact => fact.osm) && <p className="nearby-note">Расстояния по прямой · OpenStreetMap</p>}
+      <section className="review-section">
+        <h3><Sparkles size={19} /> Что пишут</h3>
+        <p>Демонстрационные отзывы</p>
+        {!result && !!current.reviews.length && <button className="secondary-button" onClick={summarize} disabled={pending !== null}>
+          {pending === scope ? 'Читаем отзывы…' : 'Сделать сводку'} <ArrowUpRight size={16} />
+        </button>}
+        {errors[scope] && <p className="error" role="alert">{errors[scope]}</p>}
+        {result && <div className="review-summary" aria-live="polite">
+          {[['pros', 'Плюсы'], ['cons', 'Минусы']].map(([key, title]) => <div key={key}>
+            <strong>{title}</strong>
+            {result[key].length ? result[key].map(item => <p key={item.source}>«{item.quote}» <small>Отзыв {item.source}</small></p>) : <p>Недостаточно данных</p>}
+          </div>)}
+          <small>Локальная модель {result.model}</small>
+        </div>}
+        <details className="raw-reviews" key={scope}>
+          <summary>Исходные отзывы</summary>
+          {current.reviews.length ? <ol>{current.reviews.map(review => <li key={review}>{review}</li>)}</ol> : <p>Отзывов пока нет</p>}
+        </details>
+      </section>
+    </>}
+  </section>;
+}
+
+export function HomeDetails({ home, points, saved, onSave, onClose }) {
   return (
     <Modal title={home.address} onClose={onClose} className="home-modal">
       <img className="detail-photo" src={home.photo} alt="Пример интерьера" />
@@ -98,37 +175,23 @@ export function HomeDetails({ home, points, saved, onSave, onClose }) {
       </div>
       {home.times?.length > 0 && <div className="detail-routes">
         <h3>Время в пути</h3>
-        {home.times.map((time, index) => <div key={index}>
-          <span className={'point-index marker-' + index}>{index + 1}</span>
-          <span>{points[index]?.name || 'Точка ' + (index + 1)}</span>
-          <strong>{time} мин</strong>
-        </div>)}
+        {home.times.map((time, index) => {
+          const point = points[index];
+          return <div key={index}>
+            <span className={'point-index marker-' + index}>{index + 1}</span>
+            <span>{point?.name || 'Точка ' + (index + 1)}</span>
+            <strong>{time} мин</strong>
+            {point && <a className="route-link" href={mapsRoute(home, point)} target="_blank" rel="noreferrer"
+              aria-label={'Маршрут в Яндекс Картах: ' + point.name}>На карте <ArrowUpRight size={13} /></a>}
+          </div>;
+        })}
+        <p>{home.routeSource === 'traffic' ? 'Автомобильное время с пробками на момент подбора' : 'Расчёт по OpenStreetMap, без учёта пробок'}</p>
       </div>}
       {home.offers.length > 1 && <details className="detail-offers">
         <summary>{home.offers.length} объявления об этой квартире <ArrowUpRight size={15} /></summary>
         {home.offers.map(offer => <div key={offer.name}>{offer.name}<strong>{money(offer.price)}</strong></div>)}
       </details>}
-      <section className="review-section">
-        <h3><Sparkles size={19} /> Что пишут о доме</h3>
-        <p>Сводка по демонстрационным отзывам</p>
-        {!summary && <button className="secondary-button" onClick={summarize} disabled={status.loading}>
-          {status.loading ? 'Читаем отзывы…' : 'Сделать сводку'} <ArrowUpRight size={16} />
-        </button>}
-        {status.error && <p className="error" role="alert">{status.error}</p>}
-        {summary && <div className="review-summary" aria-live="polite">
-          {[['pros', 'Плюсы'], ['cons', 'Минусы']].map(([key, title]) => <div key={key}>
-            <strong>{title}</strong>
-            {summary[key].length ? summary[key].map(item => <p key={item.source}>
-              «{item.quote}» <small>Отзыв {item.source}</small>
-            </p>) : <p>Недостаточно данных</p>}
-          </div>)}
-          <small>Локальная модель {summary.model}</small>
-        </div>}
-        {reviews && <details className="raw-reviews">
-          <summary>Исходные отзывы</summary>
-          {reviews.length ? <ol>{reviews.map(review => <li key={review}>{review}</li>)}</ol> : <p>Отзывы недоступны</p>}
-        </details>}
-      </section>
+      <PropertyNotes homeId={home.id} />
     </Modal>
   );
 }

@@ -7,13 +7,22 @@ export async function api(path, options = {}) {
   return response.json();
 }
 
-export function searchHomes(points, budget, rooms) {
+export function searchHomes(query, signal) {
   return api('/search', {
     method: 'POST',
+    signal,
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ points, budget: Number(budget), rooms: rooms === '' ? null : Number(rooms) }),
+    body: JSON.stringify(query),
   });
 }
 
 export const money = value => new Intl.NumberFormat('ru-RU').format(value) + ' ₽';
 export const roomName = rooms => rooms === 0 ? 'Студия' : rooms + '-комнатная';
+
+export function mapsRoute(home, point) {
+  const params = new URLSearchParams({
+    rtext: home.lat + ',' + home.lon + '~' + point.lat + ',' + point.lon,
+    rtt: point.mode === 'car' ? 'auto' : 'pd',
+  });
+  return 'https://yandex.ru/maps/?' + params;
+}

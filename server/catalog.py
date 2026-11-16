@@ -3,14 +3,11 @@ PLACES = [
     {"id": "petrovsky", "name": "Петровский сквер", "hint": "Проспект Революции", "lat": 51.67415, "lon": 39.21186},
     {"id": "vsu", "name": "Главный корпус ВГУ", "hint": "Университетская площадь", "lat": 51.65688, "lon": 39.20645},
     {"id": "station", "name": "Вокзал Воронеж-1", "hint": "Площадь Черняховского", "lat": 51.67915, "lon": 39.20687},
-    {"id": "arena", "name": "ТРК Арена", "hint": "Северный микрорайон", "lat": 51.71143, "lon": 39.17898},
+    {"id": "arena", "name": "ТРК Арена", "hint": "Бульвар Победы, 23Б", "lat": 51.710818, "lon": 39.159799},
+    {"id": "kolts24", "name": "Кольцовская, 24", "hint": "Кольцовская улица, Винзавод", "lat": 51.677069, "lon": 39.202368},
+    {"id": "gallery", "name": "Галерея Чижова", "hint": "Кольцовская улица, 35", "lat": 51.66579, "lon": 39.19283},
     {"id": "dynamo", "name": "Центральный парк", "hint": "Улица Ленина", "lat": 51.69880, "lon": 39.22144},
     {"id": "left", "name": "Парк Алые паруса", "hint": "Левобережный район", "lat": 51.65452, "lon": 39.23715},
-]
-
-DEFAULT_POINTS = [
-    {"name": PLACES[0]["name"], "lat": PLACES[0]["lat"], "lon": PLACES[0]["lon"], "mode": "walk", "limit": 35},
-    {"name": PLACES[1]["name"], "lat": PLACES[1]["lat"], "lon": PLACES[1]["lon"], "mode": "walk", "limit": 30},
 ]
 
 HOMES = [
@@ -32,13 +29,24 @@ HOMES = [
     ("mosk", "Московский проспект, 90", "Коминтерновский", 51.71043, 39.18755, 37000, 2, 60, "10 из 17", 2),
     ("svob", "Свободы, 75", "Ленинский", 51.65975, 39.17811, 31500, 1, 40, "5 из 10", 3),
     ("prom", "Промышленная, 4", "Железнодорожный", 51.68985, 39.24125, 29000, 1, 39, "2 из 7", 1),
+    ("gallery35", "Кольцовская, 35А", "Центральный", 51.66717, 39.191874, 38500, 2, 57, "3 из 5", 5),
+    ("kolts24", "Кольцовская, 24", "Центральный", 51.677078, 39.202072, 34000, 2, 49, "1 из 6", 7),
+    ("voz", "Владимира Невского, 14", "Коминтерновский", 51.70734, 39.16218, 43500, 3, 72, "9 из 9", 4),
+    ("ost80", "Остужева, 22", "Железнодорожный", 51.70421, 39.26330, 44500, 3, 76, "5 из 10", 6),
+    ("marsh", "Маршака, 14", "Советский", 51.64656, 39.15414, 42500, 4, 81, "6 из 9", 8),
+    ("patr", "Проспект Патриотов, 26", "Советский", 51.64015, 39.13312, 24000, 0, 25, "1 из 5", 4),
+    ("dl", "Димитрова, 58", "Левобережный", 51.66221, 39.25489, 31500, 2, 52, "12 из 12", 7),
 ]
 
 def demo_offers():
     for home_id, address, district, lat, lon, price, rooms, area, floor, photo in HOMES:
+        floor_number, total_floors = map(int, floor.split(" из "))
+        commission = 0 if home_id in {"revol", "nikit", "pob", "gallery35", "marsh", "kolts", "step"} else 50
         home = {
             "id": home_id, "address": address, "district": district, "lat": lat, "lon": lon,
-            "price": price, "rooms": rooms, "area": area, "floor": floor, "photo": f"/photos/{photo}.jpg",
+            "price": price, "rooms": rooms, "area": area, "floor": floor,
+            "floor_number": floor_number, "floors": total_floors, "commission": commission,
+            "photo": f"/photos/{photo}.jpg", "photo_number": photo,
         }
         yield home, "Демо-объявление A"
         if home_id in {"kolts", "revol", "sred"}:

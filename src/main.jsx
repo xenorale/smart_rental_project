@@ -1,17 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import {
-  ArrowDownWideNarrow, ArrowRight, Car, ChevronDown, Clock3, Footprints, Heart, House,
-  Info, MapPin, Plus, Search, SlidersHorizontal,
-} from 'lucide-react';
+import { ArrowDownWideNarrow, ArrowRight, ChevronDown, Clock3, Heart, House, Info, MapPin, Search } from 'lucide-react';
 import { api, money, roomName, searchHomes } from './api';
 import RentalMap from './Map';
 import { HomeDetails, PointEditor } from './Dialogs';
+import { MoreFilters, SearchFilters } from './Filters';
 import '@fontsource-variable/inter';
 import './styles.css';
 
 const EMPTY_LIST = [];
-const blankPoint = { name: '', lat: null, lon: null, mode: 'walk', limit: 25 };
+const emptyPoint = { name: '', lat: null, lon: null, mode: 'walk', limit: 20 };
+const defaultFilters = {
+  district: null, area: null, price_min: null, price_max: 45000, rooms: [], points: [],
+  size_min: null, size_max: null, floor_min: null, floor_max: null, no_first: false, no_last: false, no_commission: false,
+};
 
 function savedHomes() {
   try {
@@ -31,11 +33,11 @@ function Listing({ home, points, saved, onOpen, onSave }) {
           <div className="listing-price">{money(home.price)} <span>/ мес.</span></div>
           <h3>{roomName(home.rooms)} · {home.area} м²</h3>
           <p>{home.address}</p>
-          <div className="times">
+          {home.times.length ? <div className="times">
             {home.times.map((duration, index) => <span title={points[index]?.name} key={index}>
               <i className={'marker-' + index}>{index + 1}</i>{duration} мин
             </span>)}
-          </div>
+          </div> : <span className="listing-floor">Этаж {home.floor} · {home.district}</span>}
         </div>
       </button>
       <button className={'icon-button favorite' + (saved ? ' saved' : '')} type="button"
@@ -63,73 +65,87 @@ function Header({ tab, count, onChange }) {
 function App() {
   const [tab, setTab] = useState('search');
   const [config, setConfig] = useState(null);
-  const [points, setPoints] = useState([]);
-  const [applied, setApplied] = useState([]);
-  const [budget, setBudget] = useState(null);
-  const [rooms, setRooms] = useState('');
-  const [sort, setSort] = useState('time');
+  const [filters, setFilters] = useState(defaultFilters);
   const [result, setResult] = useState(null);
-  const [status, setStatus] = useState({ loading: true, error: '' });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [sort, setSort] = useState('price');
   const [editor, setEditor] = useState(null);
   const [picking, setPicking] = useState(null);
+  const [more, setMore] = useState(false);
   const [active, setActive] = useState(null);
   const [favorites, setFavorites] = useState(savedHomes);
   const mapAnchor = useRef(null);
-  const request = useRef(0);
+  const points = filters.points;
+  const applied = result?.points ?? EMPTY_LIST;
 
-  async function runSearch(nextPoints, nextBudget, nextRooms) {
-    const current = ++request.current;
-    setStatus({ loading: true, error: '' });
-    try {
-      const data = await searchHomes(nextPoints, nextBudget, nextRooms);
-      if (current !== request.current) return;
-      setApplied(nextPoints);
-      setResult(data);
-      setStatus({ loading: false, error: '' });
-    } catch (error) {
-      if (current === request.current) setStatus({ loading: false, error: error.message });
+  useEffect(() => {
+    const controller = new AbortController();
+    api('/config', { signal: controller.signal }).then(setConfig).catch(error => {
+      if (error.name !== 'AbortError') setError(error.message);
+    });
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    if (filters.price_min !== null && filters.price_max !== null && filters.price_min > filters.price_max) {
+      setError('Цена «от» должна быть не выше цены «до»');
+      setLoading(false);
+      return;
     }
-  }
+    setLoading(true);
+    setError('');
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        const data = await searchHomes(filters, controller.signal);
+        if (!controller.signal.aborted) setResult({ ...data, points: filters.points });
+      } catch (error) {
+        if (!controller.signal.aborted) setError(error.message);
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    }, 200);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [filters, refreshKey]);
 
-  async function load() {
-    setStatus({ loading: true, error: '' });
-    try {
-      const data = await api('/config');
-      setConfig(data);
-      setPoints(data.points);
-      setBudget(value => value ?? String(data.budget));
-      await runSearch(data.points, data.budget, '');
-    } catch (error) {
-      setStatus({ loading: false, error: error.message });
-    }
-  }
-
-  useEffect(() => { load(); }, []);
   useEffect(() => {
     try { localStorage.setItem('closer.saved', JSON.stringify(favorites)); } catch {}
   }, [favorites]);
 
   const homes = useMemo(() => {
     if (tab === 'saved') return Object.values(favorites);
-    const list = result?.listings || EMPTY_LIST;
-    return sort === 'price' ? [...list].sort((a, b) => a.price - b.price) : list;
+    const list = result?.listings ?? EMPTY_LIST;
+    return [...list].sort((a, b) => {
+      const byTime = (home) => home.times.reduce((sum, time) => sum + time, 0);
+      return (sort === 'time' ? byTime(a) - byTime(b) : 0) || a.price - b.price;
+    });
   }, [tab, favorites, result, sort]);
 
   const openHome = useCallback(home => {
-    setActive(home.routePoints ? home : { ...home, routePoints: applied });
-  }, [applied]);
+    setActive(home.routePoints ? home : { ...home, routePoints: applied, routeSource: result?.route_source });
+  }, [applied, result?.route_source]);
+
+  function changeFilters(change) {
+    setFilters(current => ({ ...current, ...change }));
+  }
 
   function toggleFavorite(home) {
     setFavorites(current => {
       const next = { ...current };
       if (next[home.id]) delete next[home.id];
-      else next[home.id] = { ...home, routePoints: home.routePoints || applied };
+      else next[home.id] = { ...home, routePoints: home.routePoints || applied, routeSource: home.routeSource || result?.route_source };
       return next;
     });
   }
 
+  function editPoint(index) {
+    setEditor({ point: points[index] ?? emptyPoint, index, isNew: !points[index] });
+  }
+
   function savePoint(point) {
-    setPoints(current => editor.isNew ? [...current, point] : current.map((old, index) => index === editor.index ? point : old));
+    changeFilters({ points: editor.isNew ? [...points, point] : points.map((old, index) => index === editor.index ? point : old) });
     setEditor(null);
   }
 
@@ -144,115 +160,91 @@ function App() {
     setPicking(null);
   }
 
-  function cancelPick() {
-    setEditor(picking);
-    setPicking(null);
-  }
-
   function switchTab(next) {
     setTab(next);
     setPicking(null);
   }
 
+  function applyExample() {
+    const [first, second] = ['kolts24', 'gallery'].map(id => config.places.find(place => place.id === id));
+    changeFilters({ points: [{ ...first, mode: 'car', limit: 20 }, { ...second, mode: 'walk', limit: 5 }] });
+  }
+
+  const isSearch = tab === 'search';
+
   return <>
     <Header tab={tab} count={Object.keys(favorites).length} onChange={switchTab} />
     <main className="page">
-      {tab === 'search' ? <>
+      {isSearch ? <>
         <div className="intro">
           <div>
             <div className="eyebrow"><span /> ДОЛГОСРОЧНАЯ АРЕНДА</div>
-            <h1>Жильё ближе <span>к делам.</span></h1>
-            <p>Укажите важные места и найдите квартиру, откуда удобно до них добираться</p>
+            <h1>Снять квартиру <span>в Воронеже.</span></h1>
+            <p>Выберите район и параметры жилья. Если важно время в дороге, добавьте свои точки</p>
           </div>
           <details className="demo-note">
             <summary><Info size={16} /> Демо-каталог</summary>
-            <p>Квартиры, цены и отзывы приведены для примера. Время в пути рассчитано по улицам Воронежа</p>
+            <p>Квартиры, цены и отзывы приведены для примера. Время в пути рассчитано по дорожной сети города</p>
           </details>
         </div>
-        <form className="search-panel" onSubmit={event => { event.preventDefault(); runSearch(points, budget, rooms); }}>
-          <div className="destinations">
-            <div className="field-label"><MapPin size={15} /> КУДА ВАМ НУЖНО</div>
-            <div className="point-buttons">
-              {points.map((point, index) => <button className="point-button" type="button" key={index}
-                aria-label={'Изменить точку: ' + point.name} onClick={() => setEditor({ point, index, isNew: false })}>
-                <span className={'point-index marker-' + index}>{index + 1}</span>
-                <span className="point-text"><strong>{point.name}</strong>
-                  <span>{point.mode === 'walk' ? <Footprints size={13} /> : <Car size={13} />}
-                    {point.mode === 'walk' ? 'Пешком' : 'На машине'} · до {point.limit} мин</span>
-                </span>
-                <ChevronDown className="point-chevron" size={15} />
-              </button>)}
-              {config && points.length < 3 && <button className="add-point" type="button"
-                onClick={() => setEditor({ point: blankPoint, index: points.length, isNew: true })}><Plus size={17} /> Добавить точку</button>}
-            </div>
-          </div>
-          <div className="filters">
-            <label className="filter-field">
-              <span className="field-label"><SlidersHorizontal size={14} /> БЮДЖЕТ</span>
-              <span className="number-field"><input aria-label="Бюджет в рублях" type="number" min="1000" max="150000" step="1"
-                required value={budget ?? ''} onChange={event => setBudget(event.target.value)} /><span>₽</span></span>
-            </label>
-            <label className="filter-field room-filter">
-              <span className="field-label">КОМНАТЫ</span>
-              <span className="select-field">
-                <select aria-label="Комнаты" value={rooms} onChange={event => setRooms(event.target.value)}>
-                  <option value="">Любые</option><option value="0">Студия</option><option value="1">1 комната</option><option value="2">2 комнаты</option>
-                </select><ChevronDown size={15} />
-              </span>
-            </label>
-            <button className="primary-button search-button" disabled={!points.length || status.loading} type="submit">
-              {status.loading ? 'Считаем…' : 'Найти жильё'} <ArrowRight size={20} />
-            </button>
-          </div>
-        </form>
+        <SearchFilters config={config} filters={filters} change={changeFilters} editPoint={editPoint}
+          reset={() => { setFilters(defaultFilters); setSort('price'); }}
+          showMore={() => setMore(true)} clearArea={() => changeFilters({ area: null })}
+          applyExample={applyExample} refresh={() => setRefreshKey(value => value + 1)} />
       </> : <div className="intro saved-intro">
         <div><h1>Избранное<span>.</span></h1><p>Квартиры, которые вы сохранили в этом браузере</p></div>
       </div>}
 
-      {tab === 'search' && status.error && <div className="search-error" role="alert">{status.error}
-        {!config && <button className="secondary-button" onClick={load}>Повторить</button>}
-      </div>}
+      {isSearch && error && <div className="search-error" role="alert">{error}</div>}
+      {isSearch && !loading && result?.route_source === 'fallback' &&
+        <div className="search-error" role="status">Пробки сейчас недоступны. Показываем расчёт по дорожной сети OpenStreetMap</div>}
 
       <div className="workspace" ref={mapAnchor}>
-        <RentalMap points={tab === 'search' ? (result ? applied : points) : EMPTY_LIST}
-          result={tab === 'search' ? result : null} homes={homes} active={active?.id} onOpen={openHome}
-          picking={Boolean(picking)} onPick={selectMapPoint} onCancel={cancelPick} />
-        <section className="results" aria-label={tab === 'search' ? 'Результаты поиска' : 'Сохранённые квартиры'}>
+        <RentalMap points={isSearch ? applied : EMPTY_LIST} result={isSearch ? result : null}
+          homes={homes} active={active?.id} onOpen={openHome}
+          area={isSearch ? filters.area : null} onArea={isSearch ? area => changeFilters({ area }) : undefined}
+          picking={Boolean(picking)} onPick={selectMapPoint} onCancel={() => { setEditor(picking); setPicking(null); }} />
+        <section className="results" aria-label={isSearch ? 'Результаты поиска' : 'Сохранённые квартиры'}>
           <div className="results-heading">
             <div>
-              <h2>{tab === 'search' ? 'Подходящие квартиры' : 'Сохранённые квартиры'}</h2>
-              <p aria-live="polite">{tab === 'search' && status.loading ? 'Рассчитываем время в пути…' :
-                status.error && !result && tab === 'search' ? 'Не удалось получить результаты' : <>{homes.length} {plural(homes.length, ['вариант', 'варианта', 'вариантов'])}{tab === 'search' && ' в пределах бюджета'}</>}</p>
+              <h2>{isSearch ? 'Квартиры' : 'Сохранённые квартиры'}</h2>
+              <p aria-live="polite">{isSearch && loading ? 'Обновляем подбор…' :
+                <>{homes.length} {plural(homes.length, ['вариант', 'варианта', 'вариантов'])}{isSearch && ' по вашим условиям'}</>}</p>
             </div>
-            {tab === 'search' && <label className="sort">
+            {isSearch && <label className="sort">
               <ArrowDownWideNarrow size={16} />
-              <select value={sort} aria-label="Сортировка" onChange={event => setSort(event.target.value)}>
-                <option value="time">По времени</option><option value="price">По цене</option>
+              <select value={applied.length ? sort : 'price'} aria-label="Сортировка" onChange={event => setSort(event.target.value)}>
+                <option value="price">По цене</option><option value="time" disabled={!applied.length}>По времени</option>
               </select><ChevronDown size={13} />
             </label>}
           </div>
-          <div className="listing-list">
+          <div className={'listing-list' + (isSearch && loading ? ' updating' : '')}>
             {homes.map(home => <Listing key={home.id} home={home} points={home.routePoints || applied}
               saved={Boolean(favorites[home.id])} onOpen={() => openHome(home)} onSave={() => toggleFavorite(home)} />)}
-            {!homes.length && (tab === 'saved' || (!status.loading && !status.error)) && <div className="empty">
-              {tab === 'saved' ? <Heart size={27} /> : <House size={28} />}
-              <h3>{tab === 'saved' ? 'Пока ничего не сохранено' : 'Квартиры не найдены'}</h3>
-              <p>{tab === 'saved' ? 'Сохраните понравившийся вариант кнопкой с сердцем' : 'Попробуйте увеличить время в пути или изменить бюджет'}</p>
-              {tab === 'saved' && <button className="secondary-button" onClick={() => switchTab('search')}>Перейти к поиску <ArrowRight size={16} /></button>}
+            {!homes.length && (!isSearch || (!loading && !error)) && <div className="empty">
+              {isSearch ? <House size={28} /> : <Heart size={27} />}
+              <h3>{isSearch ? 'К сожалению, ничего не подобрали' : 'Пока ничего не сохранено'}</h3>
+              <p>{!isSearch ? 'Сохраните понравившийся вариант кнопкой с сердцем' : result?.property_matches && points.length ?
+                'В демо-каталоге нет квартиры, которая укладывается во все лимиты. Попробуйте дать больше времени на дорогу' :
+                'Попробуйте расширить область на карте или изменить фильтры квартиры'}</p>
+              {!isSearch && <button className="secondary-button" onClick={() => switchTab('search')}>Перейти к поиску <ArrowRight size={16} /></button>}
             </div>}
-            {!homes.length && tab === 'search' && status.loading && <div className="loading-bars" aria-hidden="true"><i /><i /><i /></div>}
+            {!homes.length && isSearch && loading && <div className="loading-bars" aria-hidden="true"><i /><i /><i /></div>}
           </div>
         </section>
       </div>
 
       <footer className="footer">
         <span>Ближе<span className="brand-dot">.</span> <span className="footer-separator">/</span> Воронеж</span>
-        <span><Clock3 size={14} /> Время в пути приблизительное, без учёта пробок</span>
+        <span><Clock3 size={14} /> {isSearch && result?.route_source === 'traffic' ?
+          'Время на машине с пробками от Яндекс Карт · заливка по графу OSM' :
+          'Время в пути по OpenStreetMap, без учёта пробок'}</span>
       </footer>
     </main>
-    {editor && <PointEditor editor={editor} places={config.places} canRemove={!editor.isNew && points.length > 1}
+    {editor && <PointEditor editor={editor} places={config.places} canRemove={!editor.isNew}
       onClose={() => setEditor(null)} onSave={savePoint} onPick={startPicking}
-      onRemove={() => { setPoints(current => current.filter((_, index) => index !== editor.index)); setEditor(null); }} />}
+      onRemove={() => { changeFilters({ points: points.filter((_, index) => index !== editor.index) }); setEditor(null); }} />}
+    {more && <MoreFilters filters={filters} onClose={() => setMore(false)} onSave={values => { changeFilters(values); setMore(false); }} />}
     {active && <HomeDetails key={active.id} home={active} points={active.routePoints} saved={Boolean(favorites[active.id])}
       onSave={() => toggleFavorite(active)} onClose={() => setActive(null)} />}
   </>;

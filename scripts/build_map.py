@@ -40,6 +40,8 @@ class Extract(osmium.SimpleHandler):
         self.edges = []
         self.lines = defaultdict(list)
         self.areas = []
+        self.addresses = {}
+        self.amenities = []
         self.factory = osmium.geom.GeoJSONFactory()
 
     def add_node(self, osm_id, lat, lon):
@@ -48,8 +50,46 @@ class Extract(osmium.SimpleHandler):
             self.points.append([round(lat, 6), round(lon, 6)])
         return self.indices[osm_id]
 
+    def address(self, tags, lat, lon):
+        street = tags.get("addr:street")
+        number = tags.get("addr:housenumber")
+        if street and number and in_city(lat, lon):
+            self.addresses.setdefault(f"{street}, {number}", [round(lat, 6), round(lon, 6)])
+
+    @staticmethod
+    def amenity_kind(tags):
+        if tags.get("highway") == "bus_stop" or tags.get("public_transport") == "stop_position":
+            return "stop"
+        if tags.get("leisure") == "park":
+            return "park"
+        if tags.get("shop") in {"supermarket", "convenience"}:
+            return "shop"
+        return None
+
+    def add_amenity(self, kind, tags, lat, lon, osm_type, osm_id):
+        name = tags.get("name")
+        if name and in_city(lat, lon):
+            self.amenities.append([kind, name, round(lat, 6), round(lon, 6), osm_type, osm_id])
+
+    def node(self, node):
+        tags = node.tags
+        kind = self.amenity_kind(tags)
+        if node.location.valid() and (kind or tags.get("addr:housenumber")):
+            if kind:
+                self.add_amenity(kind, tags, node.lat, node.lon, "node", node.id)
+            self.address(tags, node.lat, node.lon)
+
     def way(self, way):
         tags = way.tags
+        kind = self.amenity_kind(tags)
+        if kind or (tags.get("addr:street") and tags.get("addr:housenumber")):
+            points = [(node.lat, node.lon) for node in way.nodes if node.location.valid()]
+            if points:
+                lat = sum(point[0] for point in points) / len(points)
+                lon = sum(point[1] for point in points) / len(points)
+                self.address(tags, lat, lon)
+                if kind:
+                    self.add_amenity(kind, tags, lat, lon, "way", way.id)
         highway = tags.get("highway", "").removesuffix("_link")
         railway = tags.get("railway") == "rail"
         if highway not in MAJOR and highway not in LOCAL and highway not in WALK_ONLY and not railway:
@@ -131,6 +171,8 @@ def main():
     ]
     write_data("voronezh-map.json.gz", {"type": "FeatureCollection", "features": extract.areas + streets})
     write_data("voronezh-graph.json.gz", {"points": extract.points, "edges": extract.edges})
+    write_data("voronezh-addresses.json.gz", [[name, *point] for name, point in sorted(extract.addresses.items())])
+    write_data("voronezh-amenities.json.gz", extract.amenities)
     print(f"{len(extract.points)} nodes, {len(extract.edges)} edges, {len(extract.areas)} areas")
 
 
