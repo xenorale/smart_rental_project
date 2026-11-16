@@ -22,7 +22,9 @@ test('поиск, карточка, избранное и фильтры', async
   await expect(page.locator('.listing-card')).toHaveCount(1);
   await page.getByRole('button', { name: 'Поиск', exact: true }).click();
   await page.getByLabel('Бюджет в рублях').fill('1000');
+  const budgetSearch = page.waitForResponse(r => r.url().endsWith('/api/search') && r.request().method() === 'POST' && r.request().postDataJSON().budget === 1000);
   await page.getByRole('button', { name: 'Найти жильё' }).click();
+  await budgetSearch;
   await expect(page.getByText('Квартиры не найдены')).toBeVisible();
   expect(errors).toEqual([]);
 });

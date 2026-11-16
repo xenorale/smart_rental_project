@@ -65,7 +65,7 @@ function App() {
   const [config, setConfig] = useState(null);
   const [points, setPoints] = useState([]);
   const [applied, setApplied] = useState([]);
-  const [budget, setBudget] = useState('45000');
+  const [budget, setBudget] = useState(null);
   const [rooms, setRooms] = useState('');
   const [sort, setSort] = useState('time');
   const [result, setResult] = useState(null);
@@ -97,7 +97,7 @@ function App() {
       const data = await api('/config');
       setConfig(data);
       setPoints(data.points);
-      setBudget(String(data.budget));
+      setBudget(value => value ?? String(data.budget));
       await runSearch(data.points, data.budget, '');
     } catch (error) {
       setStatus({ loading: false, error: error.message });
@@ -190,7 +190,7 @@ function App() {
             <label className="filter-field">
               <span className="field-label"><SlidersHorizontal size={14} /> БЮДЖЕТ</span>
               <span className="number-field"><input aria-label="Бюджет в рублях" type="number" min="1000" max="150000" step="1"
-                required value={budget} onChange={event => setBudget(event.target.value)} /><span>₽</span></span>
+                required value={budget ?? ''} onChange={event => setBudget(event.target.value)} /><span>₽</span></span>
             </label>
             <label className="filter-field room-filter">
               <span className="field-label">КОМНАТЫ</span>
